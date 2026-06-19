@@ -5,6 +5,7 @@ import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -16,7 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 @DesignerComponent(
-    version = 6,
+    version = 7,
     description = "工业级流式 Markdown OpenAI 插件。支持多轮对话上下文记忆、一键清空机制、高并发线程安全锁以及标准 HTML 渲染转换引擎。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
@@ -78,13 +79,9 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
 
     @SimpleProperty(description = "设置采样温度 (0.0 到 2.0)")
     public void Temperature(float temp) {
-        if (temp < 0.0f) {
-            this.temperature = 0.0f;
-        } else if (temp > 2.0f) {
-            this.temperature = 2.0f;
-        } else {
-            this.temperature = temp;
-        }
+        if (temp < 0.0f) this.temperature = 0.0f;
+        else if (temp > 2.0f) this.temperature = 2.0f;
+        else this.temperature = temp;
     }
 
     @SimpleProperty
@@ -112,12 +109,10 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
             OnError("AI 正在回复中，请稍后再试。");
             return;
         }
-
         if (apiKey.isEmpty()) {
             OnError("API Key 不能为空！");
             return;
         }
-
         if (userMessage == null || userMessage.trim().isEmpty()) {
             OnError("发送的消息不能为空！");
             return;
@@ -129,8 +124,7 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
         if (systemPrompt != null && !systemPrompt.trim().isEmpty()) {
             try {
                 finalPayload.put(new JSONObject().put("role", "system").put("content", systemPrompt));
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
 
         synchronized (historyMessages) {
@@ -154,23 +148,21 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
         });
     }
 
-    @SimpleFunction(description = "【Markdown渲染】将带有Markdown语法的文本一键转换为 App Inventor 标签组件（开启HTML格式）可识别的富文本。")
+    @SimpleFunction(description = "【Markdown渲染】将带有Markdown语法的文本一键转换为 App Inventor 标签组件可识别的富文本。")
     public String MarkdownToHtml(String markdownText) {
         if (markdownText == null || markdownText.isEmpty()) {
             return "";
         }
 
         String html = markdownText;
-        html = html.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;");
+        html = html.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
         html = html.replaceAll("(?s)```(\\w*)\\n?(.*?)```", "<pre style='background-color:#F4F4F4; padding:5px; font-family:monospace;'>$2</pre>");
         html = html.replaceAll("`([^`]+)`", "<code style='background-color:#F4F4F4; font-family:monospace;'> $1 </code>");
         html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
         html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
         html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
-        html = html.replaceAll("__ (.*?)__", "<b>$1</b>");
+        html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
         html = html.replaceAll("_(.*?)_", "<i>$1</i>");
         html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
@@ -244,7 +236,6 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
                         historyMessages.put(new JSONObject().put("role", "assistant").put("content", finalReply));
                     }
                 }
-
                 postStreamComplete();
 
             } else {
@@ -298,7 +289,6 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
                 }
             }
         }
-
         form.runOnUiThread(new Runnable() {
             @Override
             public void run() {
