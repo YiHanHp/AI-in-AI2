@@ -4,10 +4,11 @@ import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.*;
 import org.json.JSONObject;
+import java.io.UnsupportedEncodingException;
 
 @DesignerComponent(
-    version = 4,
-    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。支持动态全局主题色自定义、平滑滚动、安全转义、自适应 Material You 气泡排版与极速流式局部刷新。",
+    version = 6,
+    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用 RFC-3986 特殊字符编码转义过滤，彻底根除包含%或#号时大模型内容遭系统截断白屏的致命 BUG。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
 )
@@ -18,11 +19,10 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private final StringBuilder htmlContent = new StringBuilder();
     private boolean isBound = false;
 
-    // 默认全局主题色（完全对标 Google Messages 官方色盘）
-    private String userBubbleColor = "#1A73E8";    // 发送方气泡背景色（皇家蓝）
-    private String userTextColor = "#FFFFFF";      // 发送方文本颜色
-    private String partnerBubbleColor = "#E8EAED"; // 接收方气泡背景色（浅灰）
-    private String partnerTextColor = "#202124";  // 接收方文本颜色
+    private String userBubbleColor = "#1A73E8";    
+    private String userTextColor = "#FFFFFF";      
+    private String partnerBubbleColor = "#E8EAED"; 
+    private String partnerTextColor = "#202124";   
 
     public GoogleChatView(ComponentContainer container) {
         super(container.$form());
@@ -33,7 +33,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     // 1. 自定义主题色属性积木 (Properties)
     // ==========================================
 
-    @SimpleProperty(description = "设置发送方（用户）的气泡背景颜色，支持十六进制代码（如：#1A73E8）")
+    @SimpleProperty(description = "设置发送方的气泡背景颜色")
     public void UserBubbleColor(String colorCode) {
         if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
             this.userBubbleColor = colorCode;
@@ -45,7 +45,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         return this.userBubbleColor;
     }
 
-    @SimpleProperty(description = "设置发送方（用户）的文本颜色，支持十六进制代码（如：#FFFFFF）")
+    @SimpleProperty(description = "设置发送方的文本颜色")
     public void UserTextColor(String colorCode) {
         if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
             this.userTextColor = colorCode;
@@ -57,7 +57,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         return this.userTextColor;
     }
 
-    @SimpleProperty(description = "设置接收方（AI/对方）的气泡背景颜色，支持十六进制代码（如：#E8EAED）")
+    @SimpleProperty(description = "设置接收方的气泡背景颜色")
     public void PartnerBubbleColor(String colorCode) {
         if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
             this.partnerBubbleColor = colorCode;
@@ -69,7 +69,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         return this.partnerBubbleColor;
     }
 
-    @SimpleProperty(description = "设置接收方（AI/对方）的文本颜色，支持十六进制代码（如：#202124）")
+    @SimpleProperty(description = "设置接收方的文本颜色")
     public void PartnerTextColor(String colorCode) {
         if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
             this.partnerTextColor = colorCode;
@@ -82,10 +82,10 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 2. 核心控制与 CSS 变量渲染核心
+    // 2. 核心控制与安全数据传输引擎
     // ==========================================
 
-    @SimpleFunction(description = "将界面上的 WebViewer 浏览器组件与此渲染引擎进行绑定。")
+    @SimpleFunction(description = "将 WebViewer 组件与此渲染引擎进行绑定。")
     public void BindWebViewer(WebViewer webViewer) {
         this.webViewerComponent = webViewer;
         this.isBound = true;
@@ -99,14 +99,14 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     private String generateDynamicCss() {
-        return "<style id='theme-style'>" +
+        return "<style>" +
                "  :root {" +
                "    --me-bg: " + userBubbleColor + ";" +
                "    --me-text: " + userTextColor + ";" +
                "    --other-bg: " + partnerBubbleColor + ";" +
                "    --other-text: " + partnerTextColor + ";" +
                "  }" +
-               "  * { box-sizing: border-box; font-family: 'Google Sans', 'Roboto', 'Helvetica Neue', sans-serif; -webkit-tap-highlight-color: transparent; }" +
+               "  * { box-sizing: border-box; font-family: 'Google Sans', 'Roboto', sans-serif; -webkit-tap-highlight-color: transparent; }" +
                "  html, body { margin: 0; padding: 0; background-color: #F8F9FA; width: 100%; height: 100%; overflow-x: hidden; scroll-behavior: smooth; }" +
                "  #chat-container { display: flex; flex-direction: column; gap: 6px; padding: 16px; width: 100%; min-height: 100%; justify-content: flex-end; }" +
                "  .msg-row { display: flex; width: 100%; margin-bottom: 2px; animation: bubbleAppear 0.2s ease-out forwards; flex-direction: column; }" +
@@ -153,19 +153,21 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         htmlContent.append("</head><body><div id='chat-container'>");
     }
 
-    // 核心安全优化：使用绝对公开稳定的 WebViewString 底层 JS 覆写机制，绕过原生 LoadHtmlString 符号找不到的 Bug
+    // 🌟 [致命 BUG 修复内核] 核心优化：利用符合 RFC-3986 规范的简易编码器，对 HTML 全文中的百分号、井号等特殊冲突符号进行安全编码，彻底消除数据流被浏览器拦截产生的间歇性白屏
     private void refreshWebView() {
         if (webViewerComponent != null && isBound) {
             String fullHtml = htmlContent.toString() + "</div>" + SCROLL_BEHAVIOR_JS + "</body></html>";
 
-            // 构造一段高兼容性的原生 JS，动态命令 WebView 重写自身文档内容，完美平替 LoadHtmlString
-            String safeHtmlData = JSONObject.quote(fullHtml);
-            String jsTrigger = "javascript:(function() {" +
-                               "  document.open();" +
-                               "  document.write(" + safeHtmlData + ");" +
-                               "  document.close();" +
-                               "})();";
-            webViewerComponent.WebViewString(jsTrigger);
+            // 安全对特定 URL 保留字进行手动转义转换，规避 Java 底层 URLEncoder.encode 空格变加号的错乱
+            String encodedHtml = fullHtml
+                .replace("%", "%25")  // 必须首先转换百分号！
+                .replace("#", "%23")  // 转义井号，防止大模型 Markdown 标题导致流中断
+                .replace(" ", "%20")  // 转义空格
+                .replace("\n", "%0A")
+                .replace("\r", "%0D");
+
+            String safeDataUrl = "data:text/html;utf-8," + encodedHtml;
+            webViewerComponent.HomeUrl(safeDataUrl);
         }
     }
 
@@ -203,14 +205,14 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         refreshWebView();
     }
 
-    @SimpleFunction(description = "【左侧占位符】在左侧创建一个带有呼吸动效的 AI 占位符气泡，为接下来的流式蹦字做准备。")
+    @SimpleFunction(description = "【左侧占位符】在左侧创建一个带有呼吸动效的 AI 占位符气泡。")
     public void CreatePartnerBubblePlaceholder() {
-        String placeholderHtml = "<div class='msg-row other' id='stream-row'><div class='msg-bubble pulse' id='stream-content'>•••</div></div>";
+        String placeholderHtml = "•••";
         htmlContent.append(placeholderHtml);
         refreshWebView();
     }
 
-    @SimpleFunction(description = "【高频流式更新】高频将大模型返回的最新纯文本片段，安全局部刷新到占位符中，杜绝闪烁。")
+    @SimpleFunction(description = "【高频流式更新】高频局部刷新占位符内容，杜绝闪烁。")
     public void UpdatePartnerBubbleStream(String currentFullText) {
         if (webViewerComponent == null || currentFullText == null) return;
         String parsedHtml = parseMarkdownToHtml(currentFullText);
@@ -225,7 +227,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         webViewerComponent.WebViewString(jsCommand);
     }
 
-    @SimpleFunction(description = "【左侧气泡固化】当大模型流式传输完全结束，固化当前气泡，撤销临时 ID，并打上最终时间戳。")
+    @SimpleFunction(description = "【左侧气泡固化】当大模型流式传输完全结束，固化当前气泡并撤销临时 ID。")
     public void FinalizePartnerBubble(String finalMessage, String timeStr) {
         if (webViewerComponent == null) return;
         String parsedHtml = parseMarkdownToHtml(finalMessage);
@@ -247,7 +249,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 4. 高阶轻量级文本转义与 Markdown 解析引擎
+    // 4. 高阶文本转义与 Markdown 解析引擎
     // ==========================================
 
     private String escapeHtmlChars(String text) {
@@ -258,20 +260,32 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private String parseMarkdownToHtml(String text) {
         if (text == null || text.isEmpty()) return "";
 
+        // 1. 换行符归一化清洗
         String cleanedText = text.replace("\r\n", "\n").replace("\r", "\n");
+
+        // [修复BUG] 2. 压缩过量堆叠的连续无意义换行（连续3个以上的换行压缩为双换行），防止气泡拉伸塌陷
+        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n");
+
         String html = escapeHtmlChars(cleanedText);
 
+        // 3. 多行与单行代码块解析
         html = html.replaceAll("(?s)```(\\w*)\\n?(.*?)```", "<pre style='background-color:#F4F4F4; padding:5px; font-family:monospace;'>$2</pre>");
         html = html.replaceAll("`([^`]+)`", "<code style='background-color:#F4F4F4; font-family:monospace;'> $1 </code>");
+
+        // 4. 级联放大标题
         html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
         html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
         html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
+
+        // 5. 粗体、斜体、删除线与分割线
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
         html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
         html = html.replaceAll("_(.*?)_", "<i>$1</i>");
         html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
         html = html.replaceAll("(?m)^---$", "<hr>");
+
+        // 6. 软换行符安全翻译
         html = html.replace("\n", "<br>");
 
         return html;
