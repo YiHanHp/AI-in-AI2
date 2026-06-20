@@ -6,7 +6,7 @@ import com.google.appinventor.components.runtime.*;
 import org.json.JSONObject;
 
 @DesignerComponent(
-    version = 3,
+    version = 4,
     description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。支持动态全局主题色自定义、平滑滚动、安全转义、自适应 Material You 气泡排版与极速流式局部刷新。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
@@ -30,7 +30,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 1. ✨ 新增：自定义主题色属性积木 (Properties) ✨
+    // 1. 自定义主题色属性积木 (Properties)
     // ==========================================
 
     @SimpleProperty(description = "设置发送方（用户）的气泡背景颜色，支持十六进制代码（如：#1A73E8）")
@@ -85,7 +85,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     // 2. 核心控制与 CSS 变量渲染核心
     // ==========================================
 
-    @SimpleFunction(description = "将界面上的 WebViewer 浏览器组件与此渲染引擎进行绑定（支持幂等锁，防止重复绑定）。")
+    @SimpleFunction(description = "将界面上的 WebViewer 浏览器组件与此渲染引擎进行绑定。")
     public void BindWebViewer(WebViewer webViewer) {
         this.webViewerComponent = webViewer;
         this.isBound = true;
@@ -153,14 +153,22 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         htmlContent.append("</head><body><div id='chat-container'>");
     }
 
+    // 核心安全优化：使用绝对公开稳定的 WebViewString 底层 JS 覆写机制，绕过原生 LoadHtmlString 符号找不到的 Bug
     private void refreshWebView() {
         if (webViewerComponent != null && isBound) {
             String fullHtml = htmlContent.toString() + "</div>" + SCROLL_BEHAVIOR_JS + "</body></html>";
-            webViewerComponent.LoadHtmlString(fullHtml);
+
+            // 构造一段高兼容性的原生 JS，动态命令 WebView 重写自身文档内容，完美平替 LoadHtmlString
+            String safeHtmlData = JSONObject.quote(fullHtml);
+            String jsTrigger = "javascript:(function() {" +
+                               "  document.open();" +
+                               "  document.write(" + safeHtmlData + ");" +
+                               "  document.close();" +
+                               "})();";
+            webViewerComponent.WebViewString(jsTrigger);
         }
     }
 
-    // 利用 CSS Variables 在前端实时、无盲区、无闪烁地一秒切换全场皮肤
     private void updateLiveTheme() {
         if (webViewerComponent == null || !isBound) return;
         String jsCommand = "javascript:(function() {" +
@@ -239,7 +247,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 4. 高阶轻量级文本转义与 Markdown 解析引擎（修复换行 BUG）
+    // 4. 高阶轻量级文本转义与 Markdown 解析引擎
     // ==========================================
 
     private String escapeHtmlChars(String text) {
@@ -250,28 +258,20 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private String parseMarkdownToHtml(String text) {
         if (text == null || text.isEmpty()) return "";
 
-        // [修复BUG]：将 \r\n 统一清洗替换为标准的 \n，防止部分模型分发流造成代码块正则错乱崩溃
         String cleanedText = text.replace("\r\n", "\n").replace("\r", "\n");
         String html = escapeHtmlChars(cleanedText);
 
-        // 多行与单行代码块处理
         html = html.replaceAll("(?s)```(\\w*)\\n?(.*?)```", "<pre style='background-color:#F4F4F4; padding:5px; font-family:monospace;'>$2</pre>");
         html = html.replaceAll("`([^`]+)`", "<code style='background-color:#F4F4F4; font-family:monospace;'> $1 </code>");
-
-        // 级联放大标题
         html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
         html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
         html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
-
-        // 粗体、斜体、删除线与分割线
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
         html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
         html = html.replaceAll("_(.*?)_", "<i>$1</i>");
         html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
         html = html.replaceAll("(?m)^---$", "<hr>");
-
-        // 软换行符转换
         html = html.replace("\n", "<br>");
 
         return html;
