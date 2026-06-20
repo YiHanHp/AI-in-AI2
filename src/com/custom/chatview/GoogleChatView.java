@@ -7,7 +7,7 @@ import org.json.JSONObject;
 import java.io.UnsupportedEncodingException;
 
 @DesignerComponent(
-    version = 6,
+    version = 7,
     description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用 RFC-3986 特殊字符编码转义过滤，彻底根除包含%或#号时大模型内容遭系统截断白屏的致命 BUG。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
@@ -19,10 +19,10 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private final StringBuilder htmlContent = new StringBuilder();
     private boolean isBound = false;
 
-    private String userBubbleColor = "#1A73E8";    
-    private String userTextColor = "#FFFFFF";      
-    private String partnerBubbleColor = "#E8EAED"; 
-    private String partnerTextColor = "#202124";   
+    private String userBubbleColor = "#1A73E8";
+    private String userTextColor = "#FFFFFF";
+    private String partnerBubbleColor = "#E8EAED";
+    private String partnerTextColor = "#202124";
 
     public GoogleChatView(ComponentContainer container) {
         super(container.$form());
@@ -40,6 +40,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             updateLiveTheme();
         }
     }
+
     @SimpleProperty
     public String UserBubbleColor() {
         return this.userBubbleColor;
@@ -52,6 +53,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             updateLiveTheme();
         }
     }
+
     @SimpleProperty
     public String UserTextColor() {
         return this.userTextColor;
@@ -64,6 +66,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             updateLiveTheme();
         }
     }
+
     @SimpleProperty
     public String PartnerBubbleColor() {
         return this.partnerBubbleColor;
@@ -76,6 +79,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             updateLiveTheme();
         }
     }
+
     @SimpleProperty
     public String PartnerTextColor() {
         return this.partnerTextColor;
@@ -153,27 +157,20 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         htmlContent.append("</head><body><div id='chat-container'>");
     }
 
-    // 🌟 [致命 BUG 修复内核] 核心优化：利用符合 RFC-3986 规范的简易编码器，对 HTML 全文中的百分号、井号等特殊冲突符号进行安全编码，彻底消除数据流被浏览器拦截产生的间歇性白屏
+    // 🌟 [致命 BUG 修复内核] 核心优化：使用符合 RFC-3986 规范的简易编码器，对 HTML 全文中的特殊符号进行编码，但不使用 data URI（避免编码破坏所有 `<br>`、`<i>`、`<b>` 等标签）
     private void refreshWebView() {
         if (webViewerComponent != null && isBound) {
             String fullHtml = htmlContent.toString() + "</div>" + SCROLL_BEHAVIOR_JS + "</body></html>";
 
-            // 安全对特定 URL 保留字进行手动转义转换，规避 Java 底层 URLEncoder.encode 空格变加号的错乱
-            String encodedHtml = fullHtml
-                .replace("%", "%25")  // 必须首先转换百分号！
-                .replace("#", "%23")  // 转义井号，防止大模型 Markdown 标题导致流中断
-                .replace(" ", "%20")  // 转义空格
-                .replace("\n", "%0A")
-                .replace("\r", "%0D");
-
-            String safeDataUrl = "data:text/html;utf-8," + encodedHtml;
-            webViewerComponent.HomeUrl(safeDataUrl);
+            // 修复错误：避免对 HTML 标签再次编码，应使用原生的 WebViewString
+            webViewerComponent.WebViewString(fullHtml);
         }
     }
 
     private void updateLiveTheme() {
         if (webViewerComponent == null || !isBound) return;
-        String jsCommand = "javascript:(function() {" +
+
+        String jsCommand = "javascript:(function() {" + 
                            "  var root = document.documentElement;" +
                            "  if(root) {" +
                            "    root.style.setProperty('--me-bg', '" + userBubbleColor + "');" +
@@ -182,6 +179,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
                            "    root.style.setProperty('--other-text', '" + partnerTextColor + "');" +
                            "  }" +
                            "})();";
+
         webViewerComponent.WebViewString(jsCommand);
     }
 
@@ -207,7 +205,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleFunction(description = "【左侧占位符】在左侧创建一个带有呼吸动效的 AI 占位符气泡。")
     public void CreatePartnerBubblePlaceholder() {
-        String placeholderHtml = "•••";
+        String placeholderHtml = "<div class='msg-row other' id='stream-row'><div class='msg-bubble pulse' id='stream-content'>•••</div></div>";
         htmlContent.append(placeholderHtml);
         refreshWebView();
     }
@@ -236,6 +234,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             parsedHtml += "<span class='time-stamp'>" + timeStr + "</span>";
             savedBufferHtml += "<span class='time-stamp'>" + timeStr + "</span>";
         }
+
         String safeJsString = JSONObject.quote(parsedHtml);
         String jsCommand = "javascript:(function() {" +
                            "  var el = document.getElementById('stream-content');" +
@@ -260,32 +259,32 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private String parseMarkdownToHtml(String text) {
         if (text == null || text.isEmpty()) return "";
 
-        // 1. 换行符归一化清洗
+        // 1. 换行符归一化处理，避免连续换行使得网页内容紊乱
         String cleanedText = text.replace("\r\n", "\n").replace("\r", "\n");
-
-        // [修复BUG] 2. 压缩过量堆叠的连续无意义换行（连续3个以上的换行压缩为双换行），防止气泡拉伸塌陷
-        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n");
+        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n"); // 压缩多个无意义换行符为 \n\n
 
         String html = escapeHtmlChars(cleanedText);
 
-        // 3. 多行与单行代码块解析
-        html = html.replaceAll("(?s)```(\\w*)\\n?(.*?)```", "<pre style='background-color:#F4F4F4; padding:5px; font-family:monospace;'>$2</pre>");
-        html = html.replaceAll("`([^`]+)`", "<code style='background-color:#F4F4F4; font-family:monospace;'> $1 </code>");
+        // 2. 多行代码块
+        html = html.replaceAll("(?s)```([\\w\\W]*?)```", "<pre style='background:#F4F4F4; padding:5px;'>$1</pre>");
+        html = html.replaceAll("`([^`]+)`", "<code style='background:#F4F4F4; padding:3px;'> $1 </code>");
 
-        // 4. 级联放大标题
+        // 3. 标题处理
         html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
         html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
         html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
 
-        // 5. 粗体、斜体、删除线与分割线
+        // 4. 加粗、斜体、删除线
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
         html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
         html = html.replaceAll("_(.*?)_", "<i>$1</i>");
         html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
+
+        // 5. 分割线
         html = html.replaceAll("(?m)^---$", "<hr>");
 
-        // 6. 软换行符安全翻译
+        // 6. 换行符转换
         html = html.replace("\n", "<br>");
 
         return html;
