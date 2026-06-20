@@ -4,19 +4,35 @@ import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.*;
 import org.json.JSONObject;
-import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+import java.util.List;
 
 @DesignerComponent(
-    version = 7,
-    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用 RFC-3986 特殊字符编码转义过滤，彻底根除包含%或#号时大模型内容遭系统截断白屏的致命 BUG。",
+    version = 8,
+    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用动态数据池架构，彻底根除白屏、流式覆盖及标签断层 BUG。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
 )
 @SimpleObject(external = true)
 public class GoogleChatView extends AndroidNonvisibleComponent {
 
+    // 内部结构化消息实体
+    private static class ChatMessage {
+        boolean isUser;
+        String message;
+        String timeStr;
+        boolean isPlaceholder;
+
+        ChatMessage(boolean isUser, String message, String timeStr, boolean isPlaceholder) {
+            this.isUser = isUser;
+            this.message = message;
+            this.timeStr = timeStr;
+            this.isPlaceholder = isPlaceholder;
+        }
+    }
+
     private WebViewer webViewerComponent = null;
-    private final StringBuilder htmlContent = new StringBuilder();
+    private final List<ChatMessage> messageList = new ArrayList<>();
     private boolean isBound = false;
 
     private String userBubbleColor = "#1A73E8";
@@ -26,7 +42,6 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     public GoogleChatView(ComponentContainer container) {
         super(container.$form());
-        resetHtmlBuffer();
     }
 
     // ==========================================
@@ -98,7 +113,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleFunction(description = "一键彻底清空手机前端屏幕上的所有聊天气泡。")
     public void ClearDisplay() {
-        resetHtmlBuffer();
+        messageList.clear();
         refreshWebView();
     }
 
@@ -150,26 +165,43 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         "  });" +
         "</script>";
 
-    private void resetHtmlBuffer() {
-        htmlContent.setLength(0);
-        htmlContent.append("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>");
-        htmlContent.append(generateDynamicCss());
-        htmlContent.append("</head><body><div id='chat-container'>");
-    }
-
-    // 🌟 [致命 BUG 修复内核] 核心优化：使用符合 RFC-3986 规范的简易编码器，对 HTML 全文中的特殊符号进行编码，但不使用 data URI（避免编码破坏所有 `<br>`、`<i>`、`<b>` 等标签）
+    // 全量刷新网页内核
     private void refreshWebView() {
         if (webViewerComponent != null && isBound) {
-            String fullHtml = htmlContent.toString() + "</div>" + SCROLL_BEHAVIOR_JS + "</body></html>";
+            StringBuilder html = new StringBuilder();
+            html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>");
+            html.append(generateDynamicCss());
+            html.append("</head><body><div id='chat-container'>");
 
-            // 修复错误：避免对 HTML 标签再次编码，应使用原生的 WebViewString
-            webViewerComponent.WebViewString(fullHtml);
+            for (ChatMessage msg : messageList) {
+                String formattedMsg = parseMarkdownToHtml(msg.message);
+                if (msg.isUser) {
+                    html.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
+                    if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
+                        html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
+                    }
+                    html.append("</div></div>");
+                } else {
+                    if (msg.isPlaceholder) {
+                        html.append("<div class='msg-row other' id='stream-row'><div class='msg-bubble pulse' id='stream-content'>");
+                        html.append(formattedMsg.isEmpty() ? "•••" : formattedMsg);
+                    } else {
+                        html.append("<div class='msg-row other'><div class='msg-bubble'>").append(formattedMsg);
+                    }
+                    if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
+                        html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
+                    }
+                    html.append("</div></div>");
+                }
+            }
+
+            html.append("</div>").append(SCROLL_BEHAVIOR_JS).append("</body></html>");
+            webViewerComponent.WebViewString(html.toString());
         }
     }
 
     private void updateLiveTheme() {
         if (webViewerComponent == null || !isBound) return;
-
         String jsCommand = "javascript:(function() {" + 
                            "  var root = document.documentElement;" +
                            "  if(root) {" +
@@ -179,40 +211,39 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
                            "    root.style.setProperty('--other-text', '" + partnerTextColor + "');" +
                            "  }" +
                            "})();";
-
         webViewerComponent.WebViewString(jsCommand);
     }
 
     // ==========================================
-    // 3. 动态消息追加方法
+    // 3. 动态消息追加与更新方法
     // ==========================================
 
     @SimpleFunction(description = "【右侧气泡】在手机右侧渲染发送方的消息气泡。")
     public void AppendUserMessage(String message, String timeStr) {
         if (message == null || message.trim().isEmpty()) return;
-
-        String formattedMsg = parseMarkdownToHtml(message);
-        StringBuilder row = new StringBuilder();
-        row.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
-        if (timeStr != null && !timeStr.trim().isEmpty()) {
-            row.append("<span class='time-stamp'>").append(timeStr).append("</span>");
-        }
-        row.append("</div></div>");
-
-        htmlContent.append(row.toString());
+        messageList.add(new ChatMessage(true, message, timeStr, false));
         refreshWebView();
     }
 
     @SimpleFunction(description = "【左侧占位符】在左侧创建一个带有呼吸动效的 AI 占位符气泡。")
     public void CreatePartnerBubblePlaceholder() {
-        String placeholderHtml = "<div class='msg-row other' id='stream-row'><div class='msg-bubble pulse' id='stream-content'>•••</div></div>";
-        htmlContent.append(placeholderHtml);
+        messageList.add(new ChatMessage(false, "", "", true));
         refreshWebView();
     }
 
     @SimpleFunction(description = "【高频流式更新】高频局部刷新占位符内容，杜绝闪烁。")
     public void UpdatePartnerBubbleStream(String currentFullText) {
         if (webViewerComponent == null || currentFullText == null) return;
+
+        // 同步更新缓存池中最新的占位符数据
+        for (int i = messageList.size() - 1; i >= 0; i--) {
+            ChatMessage msg = messageList.get(i);
+            if (!msg.isUser && msg.isPlaceholder) {
+                msg.message = currentFullText;
+                break;
+            }
+        }
+
         String parsedHtml = parseMarkdownToHtml(currentFullText);
         String safeJsString = JSONObject.quote(parsedHtml);
         String jsCommand = "javascript:(function() {" +
@@ -228,11 +259,21 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     @SimpleFunction(description = "【左侧气泡固化】当大模型流式传输完全结束，固化当前气泡并撤销临时 ID。")
     public void FinalizePartnerBubble(String finalMessage, String timeStr) {
         if (webViewerComponent == null) return;
+
+        // 将缓存池中的占位符状态修正为常规固化状态
+        for (int i = messageList.size() - 1; i >= 0; i--) {
+            ChatMessage msg = messageList.get(i);
+            if (!msg.isUser && msg.isPlaceholder) {
+                msg.message = finalMessage;
+                msg.timeStr = timeStr;
+                msg.isPlaceholder = false;
+                break;
+            }
+        }
+
         String parsedHtml = parseMarkdownToHtml(finalMessage);
-        String savedBufferHtml = parsedHtml;
         if (timeStr != null && !timeStr.trim().isEmpty()) {
             parsedHtml += "<span class='time-stamp'>" + timeStr + "</span>";
-            savedBufferHtml += "<span class='time-stamp'>" + timeStr + "</span>";
         }
 
         String safeJsString = JSONObject.quote(parsedHtml);
@@ -243,8 +284,41 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
                            "  if(row) { row.removeAttribute('id'); }" +
                            "})();";
         webViewerComponent.WebViewString(jsCommand);
-        String staticRow = "<div class='msg-row other'>" + savedBufferHtml + "</div>";
-        htmlContent.append(staticRow);
+        
+        // 全量同步一次，确保内部 DOM 与数据池结构完全吻合
+        refreshWebView();
+    }
+
+    // ==========================================
+    // ✨ 新增核心功能积木
+    // ==========================================
+
+    @SimpleFunction(description = "【更新或新建AI回答】直接覆盖设置最新的一条AI回答内容。如果当前没有任何AI气泡，则会自动在末尾新建一个。")
+    public void UpdateOrCreateLatestPartnerMessage(String message, String timeStr) {
+        if (message == null) return;
+
+        ChatMessage latestPartner = null;
+        // 从后往前倒序查找最新的 AI 气泡
+        for (int i = messageList.size() - 1; i >= 0; i--) {
+            ChatMessage msg = messageList.get(i);
+            if (!msg.isUser) {
+                latestPartner = msg;
+                break;
+            }
+        }
+
+        if (latestPartner != null) {
+            // 场景 A：找到了最新的 AI 气泡，直接覆盖它的文本和时间
+            latestPartner.message = message;
+            latestPartner.timeStr = timeStr;
+            latestPartner.isPlaceholder = false; // 确保解除可能存在的闪烁占位状态
+        } else {
+            // 场景 B：当前没有任何 AI 回答框，全新创建一个非占位符的 AI 气泡
+            messageList.add(new ChatMessage(false, message, timeStr, false));
+        }
+
+        // 全面重绘界面
+        refreshWebView();
     }
 
     // ==========================================
@@ -259,32 +333,31 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private String parseMarkdownToHtml(String text) {
         if (text == null || text.isEmpty()) return "";
 
-        // 1. 换行符归一化处理，避免连续换行使得网页内容紊乱
         String cleanedText = text.replace("\r\n", "\n").replace("\r", "\n");
-        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n"); // 压缩多个无意义换行符为 \n\n
+        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n");
 
         String html = escapeHtmlChars(cleanedText);
 
-        // 2. 多行代码块
-        html = html.replaceAll("(?s)```([\\w\\W]*?)```", "<pre style='background:#F4F4F4; padding:5px;'>$1</pre>");
-        html = html.replaceAll("`([^`]+)`", "<code style='background:#F4F4F4; padding:3px;'> $1 </code>");
+        // 多行代码与行内代码
+        html = html.replaceAll("(?s)```([\\w\\W]*?)```", "<pre>$1</pre>");
+        html = html.replaceAll("`([^`]+)`", "<code>$1</code>");
 
-        // 3. 标题处理
+        // 标题处理
         html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
         html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
         html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
 
-        // 4. 加粗、斜体、删除线
+        // 加粗、斜体、删除线
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
         html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
         html = html.replaceAll("_(.*?)_", "<i>$1</i>");
         html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
 
-        // 5. 分割线
+        // 分割线
         html = html.replaceAll("(?m)^---$", "<hr>");
 
-        // 6. 换行符转换
+        // 换行符转换
         html = html.replace("\n", "<br>");
 
         return html;
