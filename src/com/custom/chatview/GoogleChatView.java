@@ -8,8 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 @DesignerComponent(
-    version = 8,
-    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用动态数据池架构，彻底根除白屏、流式覆盖及标签断层 BUG。",
+    version = 9,
+    description = "完美对标 Google Messages 风格的双人聊天框渲染引擎。采用轻量级 JS 增量注入内核，彻底根除由于全页重载导致的白屏致命 BUG。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
 )
@@ -101,20 +101,20 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 2. 核心控制与安全数据传输引擎
+    // 2. 核心控制与数据初始化引擎
     // ==========================================
 
     @SimpleFunction(description = "将 WebViewer 组件与此渲染引擎进行绑定。")
     public void BindWebViewer(WebViewer webViewer) {
         this.webViewerComponent = webViewer;
         this.isBound = true;
-        refreshWebView();
+        refreshWebView(); // 初始化全量绘制一次基础框架
     }
 
     @SimpleFunction(description = "一键彻底清空手机前端屏幕上的所有聊天气泡。")
     public void ClearDisplay() {
         messageList.clear();
-        refreshWebView();
+        refreshWebView(); // 清空时全量重置一次框架
     }
 
     private String generateDynamicCss() {
@@ -165,7 +165,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         "  });" +
         "</script>";
 
-    // 全量刷新网页内核
+    // 全量刷新网页内核（仅在初始化绑定、清空时被安全调用）
     private void refreshWebView() {
         if (webViewerComponent != null && isBound) {
             StringBuilder html = new StringBuilder();
@@ -215,27 +215,65 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     }
 
     // ==========================================
-    // 3. 动态消息追加与更新方法
+    // 3. 动态消息追加方法 (基于高性能 JS 局部增量DOM注入)
     // ==========================================
 
     @SimpleFunction(description = "【右侧气泡】在手机右侧渲染发送方的消息气泡。")
     public void AppendUserMessage(String message, String timeStr) {
         if (message == null || message.trim().isEmpty()) return;
+
+        // 1. 数据池同步记录
         messageList.add(new ChatMessage(true, message, timeStr, false));
-        refreshWebView();
+
+        if (webViewerComponent == null || !isBound) return;
+
+        // 2. 纯 JS 异步追加节点，不触发全页刷新，彻底根除白屏
+        String formattedMsg = parseMarkdownToHtml(message);
+        StringBuilder rowHtml = new StringBuilder();
+        rowHtml.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
+        if (timeStr != null && !timeStr.trim().isEmpty()) {
+            rowHtml.append("<span class='time-stamp'>").append(timeStr).append("</span>");
+        }
+        rowHtml.append("</div></div>");
+
+        String safeHtml = JSONObject.quote(rowHtml.toString());
+        String jsCommand = "javascript:(function() {" +
+                           "  var container = document.getElementById('chat-container');" +
+                           "  if(container) {" +
+                           "    var div = document.createElement('div');" +
+                           "    div.innerHTML = " + safeHtml + ";" +
+                           "    container.appendChild(div.firstElementChild);" +
+                           "  }" +
+                           "})();";
+        webViewerComponent.WebViewString(jsCommand);
     }
 
     @SimpleFunction(description = "【左侧占位符】在左侧创建一个带有呼吸动效的 AI 占位符气泡。")
     public void CreatePartnerBubblePlaceholder() {
+        // 1. 数据池同步记录
         messageList.add(new ChatMessage(false, "", "", true));
-        refreshWebView();
+
+        if (webViewerComponent == null || !isBound) return;
+
+        // 2. 纯 JS 异步追加节点
+        String placeholderHtml = "<div class='msg-row other' id='stream-row'><div class='msg-bubble pulse' id='stream-content'>•••</div></div>";
+        String safeHtml = JSONObject.quote(placeholderHtml);
+        String jsCommand = "javascript:(function() {" +
+                           "  var container = document.getElementById('chat-container');" +
+                           "  if(container) {" +
+                           "    var div = document.createElement('div');" +
+                           "    div.innerHTML = " + safeHtml + ";" +
+                           "    container.appendChild(div.firstElementChild);" +
+                           "  }" +
+                           "})();";
+        webViewerComponent.WebViewString(jsCommand);
     }
 
     @SimpleFunction(description = "【高频流式更新】高频局部刷新占位符内容，杜绝闪烁。")
     public void UpdatePartnerBubbleStream(String currentFullText) {
-        if (webViewerComponent == null || currentFullText == null) return;
+        if (currentFullText == null) return;
 
-        // 同步更新缓存池中最新的占位符数据
+        // 1. 同步更新缓存池中最新的占位符数据
         for (int i = messageList.size() - 1; i >= 0; i--) {
             ChatMessage msg = messageList.get(i);
             if (!msg.isUser && msg.isPlaceholder) {
@@ -244,6 +282,9 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             }
         }
 
+        if (webViewerComponent == null || !isBound) return;
+
+        // 2. 局部 DOM 精确重绘
         String parsedHtml = parseMarkdownToHtml(currentFullText);
         String safeJsString = JSONObject.quote(parsedHtml);
         String jsCommand = "javascript:(function() {" +
@@ -258,9 +299,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleFunction(description = "【左侧气泡固化】当大模型流式传输完全结束，固化当前气泡并撤销临时 ID。")
     public void FinalizePartnerBubble(String finalMessage, String timeStr) {
-        if (webViewerComponent == null) return;
-
-        // 将缓存池中的占位符状态修正为常规固化状态
+        // 1. 同步纠正数据池中的占位符状态为正式固化状态
         for (int i = messageList.size() - 1; i >= 0; i--) {
             ChatMessage msg = messageList.get(i);
             if (!msg.isUser && msg.isPlaceholder) {
@@ -271,12 +310,16 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
             }
         }
 
+        if (webViewerComponent == null || !isBound) return;
+
+        // 2. 局部操作 live DOM（注入最终文本、追加时间戳、安全抹除临时 ID），杜绝白屏
         String parsedHtml = parseMarkdownToHtml(finalMessage);
+        StringBuilder bubbleInner = new StringBuilder(parsedHtml);
         if (timeStr != null && !timeStr.trim().isEmpty()) {
-            parsedHtml += "<span class='time-stamp'>" + timeStr + "</span>";
+            bubbleInner.append("<span class='time-stamp'>").append(timeStr).append("</span>");
         }
 
-        String safeJsString = JSONObject.quote(parsedHtml);
+        String safeJsString = JSONObject.quote(bubbleInner.toString());
         String jsCommand = "javascript:(function() {" +
                            "  var el = document.getElementById('stream-content');" +
                            "  var row = document.getElementById('stream-row');" +
@@ -284,41 +327,71 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
                            "  if(row) { row.removeAttribute('id'); }" +
                            "})();";
         webViewerComponent.WebViewString(jsCommand);
-        
-        // 全量同步一次，确保内部 DOM 与数据池结构完全吻合
-        refreshWebView();
     }
 
     // ==========================================
-    // ✨ 新增核心功能积木
+    // ✨ 新功能积木：局部精细化覆盖设置/新建 AI 气泡
     // ==========================================
 
-    @SimpleFunction(description = "【更新或新建AI回答】直接覆盖设置最新的一条AI回答内容。如果当前没有任何AI气泡，则会自动在末尾新建一个。")
+    @SimpleFunction(description = "【更新或新建AI回答】直接覆盖更新最靠近末尾的一条AI回答内容。如果当前在屏幕上没有任何AI气泡，则会自动在末尾安全新建一个。")
     public void UpdateOrCreateLatestPartnerMessage(String message, String timeStr) {
         if (message == null) return;
 
-        ChatMessage latestPartner = null;
-        // 从后往前倒序查找最新的 AI 气泡
+        boolean found = false;
+        // 1. 优先操作内存数据池：逆序查找最后一条 AI 消息
         for (int i = messageList.size() - 1; i >= 0; i--) {
             ChatMessage msg = messageList.get(i);
             if (!msg.isUser) {
-                latestPartner = msg;
+                msg.message = message;
+                msg.timeStr = timeStr;
+                msg.isPlaceholder = false; // 强行解除占位符呼吸灯状态
+                found = true;
                 break;
             }
         }
 
-        if (latestPartner != null) {
-            // 场景 A：找到了最新的 AI 气泡，直接覆盖它的文本和时间
-            latestPartner.message = message;
-            latestPartner.timeStr = timeStr;
-            latestPartner.isPlaceholder = false; // 确保解除可能存在的闪烁占位状态
-        } else {
-            // 场景 B：当前没有任何 AI 回答框，全新创建一个非占位符的 AI 气泡
+        // 场景 B：如果整个聊天记录里压根没有 AI 回答气泡，则在池中添加一条常规 AI 气泡
+        if (!found) {
             messageList.add(new ChatMessage(false, message, timeStr, false));
         }
 
-        // 全面重绘界面
-        refreshWebView();
+        if (webViewerComponent == null || !isBound) return;
+
+        // 2. 纯 JS 高性能 DOM 劫持控制逻辑（存在最新框就改变 innerHTML，不存在就动态 appendChild 容器节点）
+        String parsedHtml = parseMarkdownToHtml(message);
+        StringBuilder bubbleInner = new StringBuilder(parsedHtml);
+        if (timeStr != null && !timeStr.trim().isEmpty()) {
+            bubbleInner.append("<span class='time-stamp'>").append(timeStr).append("</span>");
+        }
+        String safeBubbleInner = JSONObject.quote(bubbleInner.toString());
+
+        // 预备一整条完整气泡的 HTML
+        StringBuilder fullRowHtml = new StringBuilder();
+        fullRowHtml.append("<div class='msg-row other'><div class='msg-bubble'>").append(parsedHtml);
+        if (timeStr != null && !timeStr.trim().isEmpty()) {
+            fullRowHtml.append("<span class='time-stamp'>").append(timeStr).append("</span>");
+        }
+        fullRowHtml.append("</div></div>");
+        String safeFullRow = JSONObject.quote(fullRowHtml.toString());
+
+        String jsCommand = "javascript:(function() {" +
+                           "  var rows = document.querySelectorAll('#chat-container .msg-row.other');" +
+                           "  if(rows.length > 0) {" +
+                           "    var lastRow = rows[rows.length - 1];" +
+                           "    var bubble = lastRow.querySelector('.msg-bubble');" +
+                           "    if(bubble) {" +
+                           "      bubble.innerHTML = " + safeBubbleInner + ";" +
+                           "    }" +
+                           "  } else {" +
+                           "    var container = document.getElementById('chat-container');" +
+                           "    if(container) {" +
+                           "      var div = document.createElement('div');" +
+                           "      div.innerHTML = " + safeFullRow + ";" +
+                           "      container.appendChild(div.firstElementChild);" +
+                           "    }" +
+                           "  }" +
+                           "})();";
+        webViewerComponent.WebViewString(jsCommand);
     }
 
     // ==========================================
