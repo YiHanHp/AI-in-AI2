@@ -7,6 +7,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.net.URLEncoder;
+import java.util.regex.Pattern;
 
 @DesignerComponent(
     version = 11,
@@ -41,6 +42,22 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     private String partnerBubbleColor = "#E8EAED";
     private String partnerTextColor = "#202124";
 
+    // 预编译正则表达式，极大提升高频流式解析（Markdown）时的性能，减少 GC 压力
+    private static final Pattern REGEX_CRLF = Pattern.compile("\r\n|\r");
+    private static final Pattern REGEX_REDUNDANT_NL = Pattern.compile("\n{3,}");
+    private static final Pattern REGEX_CODE_BLOCK = Pattern.compile("(?s)```([\\w\\W]*?)```");
+    private static final Pattern REGEX_INLINE_CODE = Pattern.compile("`([^`]+)`");
+    private static final Pattern REGEX_H3 = Pattern.compile("(?m)^### (.*?)$");
+    private static final Pattern REGEX_H2 = Pattern.compile("(?m)^## (.*?)$");
+    private static final Pattern REGEX_H1 = Pattern.compile("(?m)^# (.*?)$");
+    private static final Pattern REGEX_BOLD1 = Pattern.compile("\\*\\*(.*?)\\*\\*");
+    private static final Pattern REGEX_BOLD2 = Pattern.compile("__(.*?)__");
+    private static final Pattern REGEX_ITALIC1 = Pattern.compile("\\*(.*?)\\*");
+    private static final Pattern REGEX_ITALIC2 = Pattern.compile("_(.*?)_");
+    private static final Pattern REGEX_DEL = Pattern.compile("~~(.*?)~~");
+    private static final Pattern REGEX_HR = Pattern.compile("(?m)^---$");
+    private static final Pattern REGEX_COLOR = Pattern.compile("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$");
+
     public GoogleChatView(ComponentContainer container) {
         super(container.$form());
     }
@@ -51,7 +68,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleProperty(description = "设置发送方的气泡背景颜色")
     public void UserBubbleColor(String colorCode) {
-        if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
+        if (colorCode != null && REGEX_COLOR.matcher(colorCode).matches()) {
             this.userBubbleColor = colorCode;
             updateLiveTheme();
         }
@@ -64,7 +81,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleProperty(description = "设置发送方的文本颜色")
     public void UserTextColor(String colorCode) {
-        if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
+        if (colorCode != null && REGEX_COLOR.matcher(colorCode).matches()) {
             this.userTextColor = colorCode;
             updateLiveTheme();
         }
@@ -77,7 +94,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleProperty(description = "设置接收方的气泡背景颜色")
     public void PartnerBubbleColor(String colorCode) {
-        if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
+        if (colorCode != null && REGEX_COLOR.matcher(colorCode).matches()) {
             this.partnerBubbleColor = colorCode;
             updateLiveTheme();
         }
@@ -90,7 +107,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
     @SimpleProperty(description = "设置接收方的文本颜色")
     public void PartnerTextColor(String colorCode) {
-        if (colorCode != null && colorCode.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
+        if (colorCode != null && REGEX_COLOR.matcher(colorCode).matches()) {
             this.partnerTextColor = colorCode;
             updateLiveTheme();
         }
@@ -128,9 +145,9 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
                "  }" +
                "  * { box-sizing: border-box; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; -webkit-tap-highlight-color: transparent; }" +
                "  html, body { margin: 0; padding: 0; background-color: #F8F9FA; width: 100%; height: 100%; overflow-x: hidden; scroll-behavior: smooth; }" +
-               "  #chat-container { display: flex; flex-direction: column; gap: 6px; padding: 16px; width: 100%; min-height: 100%; justify-content: flex-end; }" +
+               "  #chat-container { display: flex; flex-direction: column; gap: 6px; padding: 12px 8px; width: 100%; min-height: 100%; justify-content: flex-end; }" +
                "  .msg-row { display: flex; width: 100%; margin-bottom: 2px; animation: bubbleAppear 0.2s ease-out forwards; flex-direction: column; }" +
-               "  .msg-bubble { max-width: 78%; padding: 12px 16px; font-size: 15px; line-height: 1.45; word-wrap: break-word; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }" +
+               "  .msg-bubble { max-width: 92%; padding: 12px 16px; font-size: 15px; line-height: 1.45; word-wrap: break-word; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }" +
                "  .me { align-self: flex-end; align-items: flex-end; }" +
                "  .me .msg-bubble { background-color: var(--me-bg); color: var(--me-text); border-radius: 20px 20px 4px 20px; }" +
                "  .other { align-self: flex-start; align-items: flex-start; }" +
@@ -165,43 +182,42 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         "</script>";
 
     private void refreshWebView() {
-        if (webViewerComponent != null && isBound) {
-            StringBuilder html = new StringBuilder();
-            html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>");
-            html.append(generateDynamicCss());
-            html.append("</head><body><div id='chat-container'>");
+        if (webViewerComponent == null || !isBound) return;
+        
+        StringBuilder html = new StringBuilder(2048);
+        html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>");
+        html.append(generateDynamicCss());
+        html.append("</head><body><div id='chat-container'>");
 
-            for (ChatMessage msg : messageList) {
-                String formattedMsg = parseMarkdownToHtml(msg.message);
-                if (msg.isUser) {
-                    html.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
-                    if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
-                        html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
-                    }
-                    html.append("</div></div>");
-                } else {
-                    if (msg.isPlaceholder) {
-                        // 此处移除了 pulse 动效类
-                        html.append("<div class='msg-row other' id='stream-row'><div class='msg-bubble' id='stream-content'>");
-                        html.append(formattedMsg.isEmpty() ? "•••" : formattedMsg);
-                    } else {
-                        html.append("<div class='msg-row other'><div class='msg-bubble'>").append(formattedMsg);
-                    }
-                    if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
-                        html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
-                    }
-                    html.append("</div></div>");
+        for (ChatMessage msg : messageList) {
+            String formattedMsg = parseMarkdownToHtml(msg.message);
+            if (msg.isUser) {
+                html.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
+                if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
+                    html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
                 }
+                html.append("</div></div>");
+            } else {
+                if (msg.isPlaceholder) {
+                    html.append("<div class='msg-row other' id='stream-row'><div class='msg-bubble' id='stream-content'>");
+                    html.append(formattedMsg.isEmpty() ? "•••" : formattedMsg);
+                } else {
+                    html.append("<div class='msg-row other'><div class='msg-bubble'>").append(formattedMsg);
+                }
+                if (msg.timeStr != null && !msg.timeStr.trim().isEmpty()) {
+                    html.append("<span class='time-stamp'>").append(msg.timeStr).append("</span>");
+                }
+                html.append("</div></div>");
             }
+        }
 
-            html.append("</div>").append(SCROLL_BEHAVIOR_JS).append("</body></html>");
-            
-            try {
-                String encodedHtml = URLEncoder.encode(html.toString(), "UTF-8").replace("+", "%20");
-                webViewerComponent.GoToUrl("data:text/html;charset=utf-8," + encodedHtml);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+        html.append("</div>").append(SCROLL_BEHAVIOR_JS).append("</body></html>");
+        
+        try {
+            String encodedHtml = URLEncoder.encode(html.toString(), "UTF-8").replace("+", "%20");
+            webViewerComponent.GoToUrl("data:text/html;charset=utf-8," + encodedHtml);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -232,7 +248,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         if (webViewerComponent == null || !isBound) return;
 
         String formattedMsg = parseMarkdownToHtml(message);
-        StringBuilder rowHtml = new StringBuilder();
+        StringBuilder rowHtml = new StringBuilder(formattedMsg.length() + 128);
         rowHtml.append("<div class='msg-row me'><div class='msg-bubble'>").append(formattedMsg);
         if (timeStr != null && !timeStr.trim().isEmpty()) {
             rowHtml.append("<span class='time-stamp'>").append(timeStr).append("</span>");
@@ -257,7 +273,6 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
 
         if (webViewerComponent == null || !isBound) return;
 
-        // 此处移除了 pulse 动效类
         String placeholderHtml = "<div class='msg-row other' id='stream-row'><div class='msg-bubble' id='stream-content'>•••</div></div>";
         String safeHtml = JSONObject.quote(placeholderHtml);
         String jsCommand = "(function() {" +
@@ -275,6 +290,7 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     public void UpdatePartnerBubbleStream(String currentFullText) {
         if (currentFullText == null) return;
 
+        // 倒序寻找最新占位符
         for (int i = messageList.size() - 1; i >= 0; i--) {
             ChatMessage msg = messageList.get(i);
             if (!msg.isUser && msg.isPlaceholder) {
@@ -311,7 +327,8 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         if (webViewerComponent == null || !isBound) return;
 
         String parsedHtml = parseMarkdownToHtml(finalMessage);
-        StringBuilder bubbleInner = new StringBuilder(parsedHtml);
+        StringBuilder bubbleInner = new StringBuilder(parsedHtml.length() + 64);
+        bubbleInner.append(parsedHtml);
         if (timeStr != null && !timeStr.trim().isEmpty()) {
             bubbleInner.append("<span class='time-stamp'>").append(timeStr).append("</span>");
         }
@@ -349,13 +366,14 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
         if (webViewerComponent == null || !isBound) return;
 
         String parsedHtml = parseMarkdownToHtml(message);
-        StringBuilder bubbleInner = new StringBuilder(parsedHtml);
+        StringBuilder bubbleInner = new StringBuilder(parsedHtml.length() + 64);
+        bubbleInner.append(parsedHtml);
         if (timeStr != null && !timeStr.trim().isEmpty()) {
             bubbleInner.append("<span class='time-stamp'>").append(timeStr).append("</span>");
         }
         String safeBubbleInner = JSONObject.quote(bubbleInner.toString());
 
-        StringBuilder fullRowHtml = new StringBuilder();
+        StringBuilder fullRowHtml = new StringBuilder(parsedHtml.length() + 128);
         fullRowHtml.append("<div class='msg-row other'><div class='msg-bubble'>").append(parsedHtml);
         if (timeStr != null && !timeStr.trim().isEmpty()) {
             fullRowHtml.append("<span class='time-stamp'>").append(timeStr).append("</span>");
@@ -386,36 +404,3 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     // ==========================================
     // 4. 高阶文本转义与 Markdown 解析引擎
     // ==========================================
-
-    private String escapeHtmlChars(String text) {
-        if (text == null) return "";
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
-
-    private String parseMarkdownToHtml(String text) {
-        if (text == null || text.isEmpty()) return "";
-
-        String cleanedText = text.replace("\r\n", "\n").replace("\r", "\n");
-        cleanedText = cleanedText.replaceAll("\n{3,}", "\n\n");
-
-        String html = escapeHtmlChars(cleanedText);
-
-        html = html.replaceAll("(?s)```([\\w\\W]*?)```", "<pre>$1</pre>");
-        html = html.replaceAll("`([^`]+)`", "<code>$1</code>");
-
-        html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
-        html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
-        html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
-
-        html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
-        html = html.replaceAll("__(.*?)__", "<b>$1</b>");
-        html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
-        html = html.replaceAll("_(.*?)_", "<i>$1</i>");
-        html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
-
-        html = html.replaceAll("(?m)^---$", "<hr>");
-        html = html.replace("\n", "<br>");
-
-        return html;
-    }
-}
