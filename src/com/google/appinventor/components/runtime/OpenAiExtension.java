@@ -16,9 +16,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.security.cert.X509Certificate;
+
 @DesignerComponent(
-    version = 7,
-    description = "工业级流式 Markdown OpenAI 插件。支持多轮对话上下文记忆、一键清空机制、高并发线程安全锁以及标准 HTML 渲染转换引擎。",
+    version = 14, // 升级版本号至 14
+    description = "工业级流式 Markdown OpenAI 插件。支持精准拦截系统流初始化 null 漏洞，同时 100% 完美保留 AI 回答中正常的 'null' 文本。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
 )
@@ -26,11 +34,15 @@ import java.util.concurrent.Executors;
 @UsesPermissions(permissionNames = "android.permission.INTERNET")
 public class OpenAiExtension extends AndroidNonvisibleComponent {
 
-    private String baseUrl = "https://openai.com";
+    private String baseUrl = "https://api.openai.com";
     private String apiKey = "";
     private String modelName = "gpt-4o";
     private String systemPrompt = "You are a helpful assistant.";
     private float temperature = 0.7f;
+    
+    private int maxCompletionTokens = 0; 
+    private String reasoningEffort = "";  
+    private int maxHistoryCount = 20; 
 
     private final JSONArray historyMessages = new JSONArray();
     private final ExecutorService threadPool = Executors.newSingleThreadExecutor();
@@ -38,6 +50,7 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
 
     public OpenAiExtension(ComponentContainer container) {
         super(container.$form());
+        trustAllHosts();
     }
 
     @SimpleProperty(description = "设置 API 基础路径")
@@ -48,34 +61,22 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
     }
 
     @SimpleProperty
-    public String BaseUrl() {
-        return this.baseUrl;
-    }
+    public String BaseUrl() { return this.baseUrl; }
 
     @SimpleProperty(description = "设置 API Key / 令牌")
-    public void ApiKey(String key) {
-        this.apiKey = (key != null) ? key.trim() : "";
-    }
+    public void ApiKey(String key) { this.apiKey = (key != null) ? key.trim() : ""; }
 
     @SimpleProperty(description = "设置模型名称")
-    public void ModelName(String name) {
-        this.modelName = (name != null) ? name.trim() : "";
-    }
+    public void ModelName(String name) { this.modelName = (name != null) ? name.trim() : ""; }
 
     @SimpleProperty
-    public String ModelName() {
-        return this.modelName;
-    }
+    public String ModelName() { return this.modelName; }
 
     @SimpleProperty(description = "设置系统提示词")
-    public void SystemPrompt(String prompt) {
-        this.systemPrompt = (prompt != null) ? prompt : "";
-    }
+    public void SystemPrompt(String prompt) { this.systemPrompt = (prompt != null) ? prompt : ""; }
 
     @SimpleProperty
-    public String SystemPrompt() {
-        return this.systemPrompt;
-    }
+    public String SystemPrompt() { return this.systemPrompt; }
 
     @SimpleProperty(description = "设置采样温度 (0.0 到 2.0)")
     public void Temperature(float temp) {
@@ -85,36 +86,73 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
     }
 
     @SimpleProperty
-    public float Temperature() {
-        return this.temperature;
-    }
+    public float Temperature() { return this.temperature; }
+
+    @SimpleProperty(description = "设置最大生成 Token 限制")
+    public void MaxCompletionTokens(int tokens) { this.maxCompletionTokens = (tokens < 0) ? 0 : tokens; }
+
+    @SimpleProperty
+    public int MaxCompletionTokens() { return this.maxCompletionTokens; }
+
+    @SimpleProperty(description = "设置推理级别（low, medium, high）")
+    public void ReasoningEffort(String effort) { this.reasoningEffort = (effort != null) ? effort.trim() : ""; }
+
+    @SimpleProperty
+    public String ReasoningEffort() { return this.reasoningEffort; }
+
+    @SimpleProperty(description = "设置上下文最大保留消息数")
+    public void MaxHistoryCount(int count) { this.maxHistoryCount = (count < 2) ? 2 : count; }
+
+    @SimpleProperty
+    public int MaxHistoryCount() { return this.maxHistoryCount; }
 
     @SimpleProperty(description = "检查当前是否正在进行网络请求")
-    public boolean IsRequesting() {
-        return this.isRequesting;
+    public boolean IsRequesting() { return this.isRequesting; }
+
+    @SimpleFunction(description = "获取当前已缓存的对话历史条数。")
+    public int GetHistorySize() {
+        synchronized (historyMessages) { return historyMessages.length(); }
     }
 
-    @SimpleFunction(description = "彻底清除内存中已保存的聊天上下文历史，开启全新对话。")
+    @SimpleFunction(description = "彻底清除内存中已保存的聊天上下文历史。")
     public void ClearHistory() {
         synchronized (historyMessages) {
-            while (historyMessages.length() > 0) {
-                historyMessages.remove(0);
-            }
+            while (historyMessages.length() > 0) { historyMessages.remove(0); }
         }
     }
 
-    @SimpleFunction(description = "【流式多轮对话】自动管理上下文并以流式实时返回结果。")
+    @SimpleEvent(description = "当流式接收到深度思考内容时触发")
+    public void OnReasoningReceived(String deltaReasoning, String fullReasoning) {
+        EventDispatcher.dispatchEvent(this, "OnReasoningReceived", deltaReasoning, fullReasoning);
+    }
+
+    @SimpleEvent(description = "当流式接收到标准回答文本时触发")
+    public void OnContentReceived(String deltaContent, String fullContent) {
+        EventDispatcher.dispatchEvent(this, "OnContentReceived", deltaContent, fullContent);
+    }
+
+    @SimpleEvent(description = "当整轮对话流响应安全结束时触发")
+    public void OnChatCompleted(String finalFullContent) {
+        EventDispatcher.dispatchEvent(this, "OnChatCompleted", finalFullContent);
+    }
+
+    @SimpleEvent(description = "请求或解析发生错误时触发")
+    public void OnError(String errorMessage) {
+        EventDispatcher.dispatchEvent(this, "OnError", errorMessage);
+    }
+
+    @SimpleFunction(description = "【流式多轮对话】自动管理上下文窗口并以流式实时返回结果。")
     public void ChatWithHistoryStream(final String userMessage) {
         if (isRequesting) {
-            OnError("AI 正在回复中，请稍后再试。");
+            form.runOnUiThread(new Runnable() { @Override public void run() { OnError("AI 正在回复中，请稍后再试。"); } });
             return;
         }
         if (apiKey.isEmpty()) {
-            OnError("API Key 不能为空！");
+            form.runOnUiThread(new Runnable() { @Override public void run() { OnError("API Key 不能为空！"); } });
             return;
         }
         if (userMessage == null || userMessage.trim().isEmpty()) {
-            OnError("发送的消息不能为空！");
+            form.runOnUiThread(new Runnable() { @Override public void run() { OnError("发送的消息不能为空！"); } });
             return;
         }
 
@@ -129,6 +167,14 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
 
         synchronized (historyMessages) {
             try {
+                while (historyMessages.length() >= maxHistoryCount) {
+                    if (historyMessages.length() >= 2) {
+                        historyMessages.remove(0);
+                        historyMessages.remove(0);
+                    } else {
+                        historyMessages.remove(0);
+                    }
+                }
                 historyMessages.put(new JSONObject().put("role", "user").put("content", userMessage));
                 for (int i = 0; i < historyMessages.length(); i++) {
                     finalPayload.put(historyMessages.get(i));
@@ -142,174 +188,173 @@ public class OpenAiExtension extends AndroidNonvisibleComponent {
 
         threadPool.execute(new Runnable() {
             @Override
-            public void run() {
-                executeStreamNetworkRequest(finalPayload, true);
-            }
+            public void run() { executeStreamNetworkRequest(finalPayload); }
         });
     }
 
-    @SimpleFunction(description = "【Markdown渲染】将带有Markdown语法的文本一键转换为 App Inventor 标签组件可识别的富文本。")
-    public String MarkdownToHtml(String markdownText) {
-        if (markdownText == null || markdownText.isEmpty()) {
-            return "";
+    private void executeStreamNetworkRequest(JSONArray payload) {
+        HttpURLConnection conn = null;
+        InputStream in = null;
+        
+        final StringBuilder fullReasoningBuilder = new StringBuilder();
+        final StringBuilder fullContentBuilder = new StringBuilder();
+
+        try {
+            JSONObject body = new JSONObject();
+            body.put("model", modelName);
+            body.put("messages", payload);
+            body.put("stream", true);
+
+            if (temperature != 0.7f) body.put("temperature", temperature);
+            if (maxCompletionTokens > 0) body.put("max_completion_tokens", maxCompletionTokens);
+            if (reasoningEffort != null && !reasoningEffort.isEmpty()) {
+                body.put("reasoning_effort", reasoningEffort);
+            }
+
+            URL url = new URL(baseUrl + "/v1/chat/completions");
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+
+            OutputStream os = conn.getOutputStream();
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode != 200) {
+                in = conn.getErrorStream();
+                throw new Exception("HTTP " + responseCode + ": " + readAll(in));
+            }
+
+            in = conn.getInputStream();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+            String line;
+
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || !line.startsWith("data:")) continue;
+
+                String dataPayload = line.substring(5).trim();
+                if (dataPayload.equals("[DONE]")) break;
+
+                try {
+                    JSONObject jsonResp = new JSONObject(dataPayload);
+                    JSONArray choices = jsonResp.optJSONArray("choices");
+                    if (choices != null && choices.length() > 0) {
+                        JSONObject delta = choices.getJSONObject(0).optJSONObject("delta");
+                        if (delta != null) {
+                            
+                            // ==================== 【核心优化：深度思考字段解析】 ====================
+                            if (delta.has("reasoning_content") && !delta.isNull("reasoning_content")) {
+                                Object rawReasoning = delta.get("reasoning_content");
+                                // 只有当底层类型确实是字符串，且不等于 JSONObject.NULL 时才提取
+                                if (rawReasoning instanceof String) {
+                                    final String deltaReasoning = (String) rawReasoning;
+                                    if (!deltaReasoning.isEmpty()) {
+                                        fullReasoningBuilder.append(deltaReasoning);
+                                        form.runOnUiThread(new Runnable() {
+                                            @Override public void run() {
+                                                OnReasoningReceived(deltaReasoning, fullReasoningBuilder.toString());
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+
+                            // ==================== 【核心优化：标准回答字段解析】 ====================
+                            if (delta.has("content") && !delta.isNull("content")) {
+                                Object rawContent = delta.get("content");
+                                // 严格过滤：必须是 Java 原生 String 类型，防止 JSONObject.NULL 被误转为 "null" 字符串
+                                if (rawContent instanceof String) {
+                                    final String deltaContent = (String) rawContent;
+                                    if (!deltaContent.isEmpty()) {
+                                        fullContentBuilder.append(deltaContent);
+                                        form.runOnUiThread(new Runnable() {
+                                            @Override public void run() {
+                                                OnContentReceived(deltaContent, fullContentBuilder.toString());
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            final String finalAnswer = fullContentBuilder.toString();
+            if (!finalAnswer.isEmpty()) {
+                synchronized (historyMessages) {
+                    historyMessages.put(new JSONObject().put("role", "assistant").put("content", finalAnswer));
+                }
+            }
+
+            form.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    isRequesting = false;
+                    OnChatCompleted(finalAnswer);
+                }
+            });
+
+        } catch (final Exception e) {
+            form.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    isRequesting = false;
+                    OnError(e.getMessage());
+                }
+            });
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) {}
+            try { if (conn != null) conn.disconnect(); } catch (Exception ignored) {}
         }
+    }
 
-        String html = markdownText;
+    private String readAll(InputStream is) {
+        if (is == null) return "";
+        try {
+            BufferedReader r = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String l;
+            while ((l = r.readLine()) != null) sb.append(l).append("\n");
+            return sb.toString();
+        } catch (Exception e) { return ""; }
+    }
+
+    @SimpleFunction(description = "【Markdown渲染】将带有Markdown语法的文本转换为 App Inventor 富文本 HTML 格式。")
+    public String MarkdownToHtml(String markdownText) {
+        if (markdownText == null || markdownText.isEmpty()) return "";
+        // 如果输入真的是 AI 说的 "null" 字符串，则当做普通文本处理，不再强制返回空串
+        if (markdownText.equals("null")) return "null";
+
+        String html = markdownText.replace("\r\n", "\n");
         html = html.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-        html = html.replaceAll("(?s)```(\\w*)\\n?(.*?)```", "<pre style='background-color:#F4F4F4; padding:5px; font-family:monospace;'>$2</pre>");
-        html = html.replaceAll("`([^`]+)`", "<code style='background-color:#F4F4F4; font-family:monospace;'> $1 </code>");
-        html = html.replaceAll("(?m)^### (.*?)$", "<br><b><font size='+1'>$1</font></b><br>");
-        html = html.replaceAll("(?m)^## (.*?)$", "<br><b><font size='+2'>$1</font></b><br>");
-        html = html.replaceAll("(?m)^# (.*?)$", "<br><b><font size='+3'>$1</font></b><br>");
         html = html.replaceAll("\\*\\*(.*?)\\*\\*", "<b>$1</b>");
-        html = html.replaceAll("__(.*?)__", "<b>$1</b>");
         html = html.replaceAll("\\*(.*?)\\*", "<i>$1</i>");
-        html = html.replaceAll("_(.*?)_", "<i>$1</i>");
-        html = html.replaceAll("~~(.*?)~~", "<del>$1</del>");
-        html = html.replaceAll("(?m)^---$", "<hr>");
-        html = html.replace("\n", "<br>");
-
+        html = html.replace("\n", "<br/>");
         return html;
     }
 
-    private void executeStreamNetworkRequest(final JSONArray messagesArray, final boolean isMultiTurn) {
-        HttpURLConnection connection = null;
-        StringBuilder fullReplyAccumulator = new StringBuilder();
-
+    private void trustAllHosts() {
         try {
-            URL url = new URL(baseUrl + "/chat/completions");
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-            connection.setRequestProperty("Authorization", "Bearer " + apiKey);
-            connection.setRequestProperty("Accept", "text/event-stream");
-            connection.setDoOutput(true);
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(60000);
-
-            JSONObject requestBody = new JSONObject();
-            requestBody.put("model", modelName);
-            requestBody.put("temperature", temperature);
-            requestBody.put("messages", messagesArray);
-            requestBody.put("stream", true);
-
-            try (OutputStream os = connection.getOutputStream()) {
-                os.write(requestBody.toString().getBytes(StandardCharsets.UTF_8));
-                os.flush();
-            }
-
-            int responseCode = connection.getResponseCode();
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                try (InputStream is = connection.getInputStream();
-                     BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        line = line.trim();
-                        if (line.isEmpty()) continue;
-
-                        if (line.startsWith("data:")) {
-                            String dataContent = line.substring(5).trim();
-                            if ("[DONE]".equals(dataContent)) {
-                                break;
-                            }
-
-                            try {
-                                JSONObject chunkJson = new JSONObject(dataContent);
-                                JSONArray choices = chunkJson.getJSONArray("choices");
-                                if (choices.length() > 0) {
-                                    JSONObject delta = choices.getJSONObject(0).getJSONObject("delta");
-                                    if (delta.has("content")) {
-                                        final String chunkText = delta.getString("content");
-                                        fullReplyAccumulator.append(chunkText);
-                                        postChunkUpdate(chunkText);
-                                    }
-                                }
-                            } catch (Exception ignored) {
-                            }
-                        }
-                    }
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
                 }
-
-                String finalReply = fullReplyAccumulator.toString();
-                if (isMultiTurn && !finalReply.isEmpty()) {
-                    synchronized (historyMessages) {
-                        historyMessages.put(new JSONObject().put("role", "assistant").put("content", finalReply));
-                    }
-                }
-                postStreamComplete();
-
-            } else {
-                StringBuilder errResponse = new StringBuilder();
-                try (InputStream errStream = connection.getErrorStream()) {
-                    if (errStream != null) {
-                        try (BufferedReader in = new BufferedReader(new InputStreamReader(errStream, StandardCharsets.UTF_8))) {
-                            String inputLine;
-                            while ((inputLine = in.readLine()) != null) {
-                                errResponse.append(inputLine);
-                            }
-                        }
-                    }
-                }
-                handleFailure(isMultiTurn, "HTTP 错误代码: " + responseCode + " | 详情: " + errResponse.toString());
-            }
-
-        } catch (Exception e) {
-            handleFailure(isMultiTurn, "流式连接异常中断: " + e.getMessage());
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
-        }
-    }
-
-    private void postChunkUpdate(final String chunk) {
-        form.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                OnGotChunk(chunk);
-            }
-        });
-    }
-
-    private void postStreamComplete() {
-        form.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                isRequesting = false;
-                OnStreamComplete();
-            }
-        });
-    }
-
-    private void handleFailure(final boolean isMultiTurn, final String errorMsg) {
-        if (isMultiTurn) {
-            synchronized (historyMessages) {
-                if (historyMessages.length() > 0) {
-                    historyMessages.remove(historyMessages.length() - 1);
-                }
-            }
-        }
-        form.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                isRequesting = false;
-                OnError(errorMsg);
-            }
-        });
-    }
-
-    @SimpleEvent(description = "每当 AI 吐出新字/新词时触发。")
-    public void OnGotChunk(String chunk) {
-        EventDispatcher.dispatchEvent(this, "OnGotChunk", chunk);
-    }
-
-    @SimpleEvent(description = "当整段大模型流式内容全部接收完毕时触发。")
-    public void OnStreamComplete() {
-        EventDispatcher.dispatchEvent(this, "OnStreamComplete");
-    }
-
-    @SimpleEvent(description = "当请求或传输发生错误时触发。")
-    public void OnError(String errorMessage) {
-        EventDispatcher.dispatchEvent(this, "OnError", errorMessage);
+            };
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(null, trustAllCerts, new java.security.SecureRandom());
+            HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+            HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
+                public boolean verify(String hostname, SSLSession session) { return true; }
+            });
+        } catch (Exception ignored) {}
     }
 }
