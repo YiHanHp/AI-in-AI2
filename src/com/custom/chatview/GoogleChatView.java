@@ -290,7 +290,6 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     public void UpdatePartnerBubbleStream(String currentFullText) {
         if (currentFullText == null) return;
 
-        // 倒序寻找最新占位符
         for (int i = messageList.size() - 1; i >= 0; i--) {
             ChatMessage msg = messageList.get(i);
             if (!msg.isUser && msg.isPlaceholder) {
@@ -404,3 +403,39 @@ public class GoogleChatView extends AndroidNonvisibleComponent {
     // ==========================================
     // 4. 高阶文本转义与 Markdown 解析引擎
     // ==========================================
+
+    private String escapeHtmlChars(String text) {
+        if (text == null) return "";
+        return text.replace("&", "&amp;")
+                   .replace("<", "&lt;")
+                   .replace(">", "&gt;");
+    }
+
+    private String parseMarkdownToHtml(String text) {
+        if (text == null || text.isEmpty()) return "";
+
+        String html = REGEX_CRLF.matcher(text).replaceAll("\n");
+        html = REGEX_REDUNDANT_NL.matcher(html).replaceAll("\n\n");
+
+        html = escapeHtmlChars(html);
+
+        html = REGEX_CODE_BLOCK.matcher(html).replaceAll("<pre>$1</pre>");
+        html = REGEX_INLINE_CODE.matcher(html).replaceAll("<code>$1</code>");
+
+        html = REGEX_H3.matcher(html).replaceAll("<br><b><font size='+1'>$1</font></b><br>");
+        html = REGEX_H2.matcher(html).replaceAll("<br><b><font size='+2'>$1</font></b><br>");
+        html = REGEX_H1.matcher(html).replaceAll("<br><b><font size='+3'>$1</font></b><br>");
+
+        html = REGEX_BOLD1.matcher(html).replaceAll("<b>$1</b>");
+        html = REGEX_BOLD2.matcher(html).replaceAll("<b>$1</b>");
+        html = REGEX_ITALIC1.matcher(html).replaceAll("<i>$1</i>");
+        html = REGEX_ITALIC2.matcher(html).replaceAll("<i>$1</i>");
+        html = REGEX_DEL.matcher(html).replaceAll("<del>$1</del>");
+
+        html = REGEX_HR.matcher(html).replaceAll("<hr>");
+        
+        html = html.replace("\n", "<br>");
+
+        return html;
+    }
+}
