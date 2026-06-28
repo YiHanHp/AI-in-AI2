@@ -20,20 +20,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 @DesignerComponent(
-    version = 4,
+    version = 5,
     description = "超级兼容版图片转Base64插件。完美向下兼容至 Android 4.4，向上兼容至 Android 15+ 存储沙盒与新版媒体权限体制。采用线程池架构替代老旧 AsyncTask，全渠道规避 OOM 与权限崩溃。",
     category = ComponentCategory.EXTENSION,
     nonVisible = true
 )
 @SimpleObject(external = true)
-// 【核心修复】App Inventor 2 固有的注解限制，多权限必须用逗号隔开写在同一个字符串内，不能使用 Java 数组 {}
 @UsesPermissions(permissionNames = "android.permission.READ_EXTERNAL_STORAGE,android.permission.WRITE_EXTERNAL_STORAGE,android.permission.READ_MEDIA_IMAGES")
 public class ImageToBase64Extension extends AndroidNonvisibleComponent {
 
     private final Context context;
-    private static final int TARGET_MAX_SIDE = 1024; // 适配大模型及主流网络传输的最佳分辨率边界
-    
-    // 替代已废弃的 AsyncTask，提供高并发、多版本稳定的单线程队列池
+    private static final int TARGET_MAX_SIDE = 1024; 
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
     public ImageToBase64Extension(ComponentContainer container) {
@@ -74,7 +71,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                         return;
                     }
 
-                    // 1. 第一阶段：预读边界元数据（防止大图直接装载导致 OOM 崩溃）
                     BitmapFactory.Options options = new BitmapFactory.Options();
                     options.inJustDecodeBounds = true;
                     
@@ -92,17 +88,14 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                     BitmapFactory.decodeStream(sizeCheckStream, null, options);
                     sizeCheckStream.close();
 
-                    // 2. 动态计算适配低内存的降采样比率
                     options.inSampleSize = calculateInSampleSize(options, TARGET_MAX_SIDE, TARGET_MAX_SIDE);
                     options.inJustDecodeBounds = false;
                     
-                    // 针对古老的 Android 4.x (API < 21) 的特殊低内存回收优化配置
                     if (Build.VERSION.SDK_INT < 21) {
                         options.inPurgeable = true;
                         options.inInputShareable = true;
                     }
 
-                    // 3. 第二阶段：安全加载降采样后的位图
                     imageStream = context.getContentResolver().openInputStream(targetUri);
                     sourceBitmap = BitmapFactory.decodeStream(imageStream, null, options);
                     imageStream.close();
@@ -112,7 +105,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                         return;
                     }
 
-                    // 4. 第三阶段：全版本兼容的 EXIF 方向智能校正
                     int rotationAngle = getExifRotationAngleSafe(targetUri, imagePath);
                     if (rotationAngle != 0) {
                         Matrix matrix = new Matrix();
@@ -122,9 +114,8 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                         correctedBitmap = sourceBitmap;
                     }
 
-                    // 5. 第四阶段：高保真流水线压缩转码
                     baos = new ByteArrayOutputStream();
-                    correctedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos); // 80 质量比为大模型视觉识别平衡度最佳点
+                    correctedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos); 
                     byte[] imageBytes = baos.toByteArray();
 
                     final String base64Result = Base64.encodeToString(imageBytes, Base64.NO_WRAP);
@@ -136,7 +127,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                 } catch (final Exception e) {
                     postError("转码期捕获到系统级异常: " + e.getMessage());
                 } finally {
-                    // 多重无缝熔断流清理，杜绝任何死锁与泄漏
                     try { if (sizeCheckStream != null) sizeCheckStream.close(); } catch (Exception ignored) {}
                     try { if (imageStream != null) imageStream.close(); } catch (Exception ignored) {}
                     try { if (baos != null) baos.close(); } catch (Exception ignored) {}
@@ -147,10 +137,24 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
         });
     }
 
-    @SimpleFunction(description = "【内存位图转换】直接将 Canvas、Image 或画板组件在内存中的原生 Bitmap 对象转为 Base64，省去频繁写盘读盘损耗。")
-    public void ConvertBitmapToBase64(final Bitmap bitmap) {
-        if (bitmap == null || bitmap.isRecycled()) {
-            OnConversionError("错误：传入的内存位图对象为空，或已被 Android 系统前台强行回收。");
+    // 【核心修复】将参数由 Bitmap 改为 Object 绕过 AI2 编译器的 Yail 校验限制
+    @SimpleFunction(description = "【内存位图转换】直接将从其他高级组件获取的内存原生 Bitmap 对象转为 Base64，省去频繁写盘读盘损耗。")
+    public void ConvertBitmapToBase64(final Object bitmapObject) {
+        if (bitmapObject == null) {
+            OnConversionError("错误：传入的内存位图对象为空。");
+            return;
+        }
+
+        // 运行时进行安全的类型判定
+        if (!(bitmapObject instanceof Bitmap)) {
+            OnConversionError("错误：传入的对象不是标准的有效 Android Bitmap 位图对象。");
+            return;
+        }
+
+        final Bitmap bitmap = (Bitmap) bitmapObject;
+
+        if (bitmap.isRecycled()) {
+            OnConversionError("错误：传入的内存位图已被 Android 系统前台强行回收。");
             return;
         }
 
@@ -162,7 +166,7 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                 try {
                     int width = bitmap.getWidth();
                     int height = bitmap.getHeight();
-                    // 针对大尺寸画板进行防超限缩放
+                    
                     if (width > TARGET_MAX_SIDE || height > TARGET_MAX_SIDE) {
                         float scale = Math.min((float) TARGET_MAX_SIDE / width, (float) TARGET_MAX_SIDE / height);
                         Matrix matrix = new Matrix();
@@ -184,7 +188,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                     postError("内存位图转码发生内部异常: " + e.getMessage());
                 } finally {
                     try { if (baos != null) baos.close(); } catch (Exception ignored) {}
-                    // 极其重要：只回收我们为了防止OOM新生成的缩放位图。原始 bitmap 属于底层 Canvas 组件，绝不能销毁，否则前端画布会直接全黑报错。
                     if (scaledBitmap != null && scaledBitmap != bitmap && !scaledBitmap.isRecycled()) {
                         scaledBitmap.recycle();
                     }
@@ -192,8 +195,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
             }
         });
     }
-
-    // --- 高可靠性全版本向下兼容辅助工具箱 ---
 
     private Uri parseSafeUri(String path) {
         try {
