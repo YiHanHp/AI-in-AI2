@@ -26,11 +26,8 @@ import java.util.concurrent.Executors;
     nonVisible = true
 )
 @SimpleObject(external = true)
-@UsesPermissions(permissionNames = {
-    "android.permission.READ_EXTERNAL_STORAGE",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
-    "android.permission.READ_MEDIA_IMAGES" // 适配 Android 13+ 细粒度媒体权限
-})
+// 【核心修复】App Inventor 2 固有的注解限制，多权限必须用逗号隔开写在同一个字符串内，不能使用 Java 数组 {}
+@UsesPermissions(permissionNames = "android.permission.READ_EXTERNAL_STORAGE,android.permission.WRITE_EXTERNAL_STORAGE,android.permission.READ_MEDIA_IMAGES")
 public class ImageToBase64Extension extends AndroidNonvisibleComponent {
 
     private final Context context;
@@ -206,7 +203,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
             if (path.startsWith("/")) {
                 return Uri.fromFile(new File(path));
             }
-            // 针对 App Inventor 内部特殊资源资产前缀（如 asset）做自适应识别
             return Uri.parse(path);
         } catch (Exception e) {
             return null;
@@ -228,11 +224,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
         return inSampleSize;
     }
 
-    /**
-     * 双通道完美兼容 EXIF 角度校正
-     * Android 7.0+ (API 24+) 强制走沙盒 Stream 流通道
-     * Android 4.4 - 6.0 走传统 File 物理绝对路径老通道，完美规避 MethodNotFound 错误
-     */
     private int getExifRotationAngleSafe(Uri uri, String rawPath) {
         int degree = 0;
         InputStream inputStream = null;
@@ -244,7 +235,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                     exifInterface = new ExifInterface(inputStream);
                 }
             } else {
-                // 针对 Android 4.4 到 6.0 的老旧机型，由于早期没有开辟沙盒，直接使用传统绝对路径解析
                 String realPath = rawPath.startsWith("file://") ? rawPath.substring(7) : rawPath;
                 if (new File(realPath).exists()) {
                     exifInterface = new ExifInterface(realPath);
@@ -260,7 +250,6 @@ public class ImageToBase64Extension extends AndroidNonvisibleComponent {
                 }
             }
         } catch (Throwable ignored) {
-            // Throwable 彻底拦截低版本可能由于缺少运行时类报出的 NoClassDefFoundError 或 LinkageError
         } finally {
             try { if (inputStream != null) inputStream.close(); } catch (Exception ignored) {}
         }
